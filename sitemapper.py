@@ -1,5 +1,15 @@
 # sitemapper.py
-"""Version 0.31"""
+"""Version 0.32
+
+A web crawler that generates an XML or CSV sitemap of a website, including SEO titles and H1 tags.
+
+Features:
+- Crawls a website starting from a base URL
+- Extracts all internal links, SEO titles, and H1 tags
+- Generates an XML sitemap or CSV file with the extracted data
+
+Author: Roger Hagman
+"""
 
 # Imports
 import requests
@@ -27,7 +37,7 @@ class SitemapGenerator:
         """Check if URL belongs to the same domain and is valid"""
         parsed = urlparse(url)
         
-        # Check if we should ignore WooCommerce URLs
+        # Check if we should ignore WooCommerce action URLs
         if self.ignore_woocommerce_urls and self.woocommerce_ignore_cart_urls(url):
             return False
             
@@ -37,11 +47,11 @@ class SitemapGenerator:
                 not url.endswith(('.pdf', '.jpg', '.png', '.zip', 'webp', 'mp4', 'mpeg', 'svg')))
 
     def ignore_anchored_links(self, url):
-        """Remove anchor fragments from URLs to avoid duplicates"""
+        """Remove anchor links from URLs to avoid duplicates in sitemap"""
         return url.split('#')[0]
 
     def extract_seo_title_and_h1(self, url, soup):
-        """Extract SEO title and H1 from HTML"""
+        """Extract SEO title and H1 metadata from a page"""
         try:
             # Extract SEO title from <title> tag
             title_tag = soup.find('title')
@@ -84,7 +94,7 @@ class SitemapGenerator:
             for link in soup.find_all('a', href=True):
                 full_url = urljoin(url, link['href'])
                 
-                # Remove anchor fragments before validation
+                # Remove anchor links before validation
                 full_url = self.ignore_anchored_links(full_url)
                 
                 if self.is_valid_url(full_url) and full_url not in links:
@@ -109,7 +119,7 @@ class SitemapGenerator:
             print(f"Crawling: {current_url}")
             self.visited_urls.add(current_url)
 
-            # Extract links, SEO title and H1 from current page
+            # Extract links, SEO title and H1 from the current page
             new_links = self.extract_links_and_titles(current_url)
 
             # Add new links to the queue
@@ -120,7 +130,7 @@ class SitemapGenerator:
                     urls_to_visit.add(clean_link)
                     self.all_links.add(clean_link)
 
-            # Respectful delay between requests
+            # Graceful delay between requests
             time.sleep(self.delay)
 
     def generate_sitemap(self, output_file='sitemap.xml'):
