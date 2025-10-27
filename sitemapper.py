@@ -1,5 +1,5 @@
 # sitemapper.py
-# Version 0.2
+# Version 0.3
 import requests
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin, urlparse
@@ -9,7 +9,7 @@ import time
 import csv
 
 class SitemapGenerator:
-    def __init__(self, base_url, delay=1):
+    def __init__(self, base_url, delay=1, ignore_woocommerce_urls=False):
         # Automatically add https:// if no scheme is provided
         if not base_url.startswith(('http://', 'https://')):
             base_url = 'https://' + base_url
@@ -19,10 +19,16 @@ class SitemapGenerator:
         self.all_links = set()
         self.page_data = {}
         self.domain = urlparse(base_url).netloc
+        self.ignore_woocommerce_urls = ignore_woocommerce_urls
 
     def is_valid_url(self, url):
         """Check if URL belongs to the same domain and is valid"""
         parsed = urlparse(url)
+        
+        # Check if we should ignore WooCommerce URLs
+        if self.ignore_woocommerce_urls and self.woocommerce_ignore_cart_urls(url):
+            return False
+            
         return (parsed.netloc == self.domain and
                 parsed.scheme in ['http', 'https'] and
                 not url.endswith(('.pdf', '.jpg', '.png', '.zip', 'webp', 'mp4')))
@@ -187,8 +193,23 @@ class SitemapGenerator:
 
     def woocommerce_ignore_cart_urls(self, url):
         """Ignore WooCommerce cart, wishlist and checkout in URLs"""
-        if '?' in url and ('cart' in url or 'wishlist' in url or 'checkout' in url):
-            return True
+        woocommerce_terms = ['cart', 'wishlist', 'checkout', 'add-to-cart', 'my-account']
+        
+        # Check both in the path and query parameters
+        parsed_url = urlparse(url)
+        url_lower = url.lower()
+        
+        # Check path for WooCommerce terms
+        for term in woocommerce_terms:
+            if term in parsed_url.path.lower():
+                return True
+        
+        # Check query parameters for WooCommerce terms
+        if '?' in url:
+            for term in woocommerce_terms:
+                if term in url_lower:
+                    return True
+        
         return False
 
 def main():
@@ -202,6 +223,16 @@ def main():
     
     max_pages = int(input("Enter maximum pages to crawl (default 50): ") or "50")
     
+    # WooCommerce URL filtering choice
+    print("\nWooCommerce URL Filtering:")
+    print("Ignore WooCommerce URLs like cart, checkout, wishlist, etc.?")
+    ignore_woocommerce = input("Ignore WooCommerce URLs? (y/N): ").strip().lower() == 'y'
+    
+    if ignore_woocommerce:
+        print("✓ Will ignore WooCommerce URLs (cart, checkout, wishlist, etc.)")
+    else:
+        print("✓ Will include all URLs including WooCommerce pages")
+    
     # Output format selection
     print("\nSelect output format:")
     print("1. XML (Standard sitemap)")
@@ -214,7 +245,7 @@ def main():
         output_file = input("Enter output filename (default sitemap.csv): ") or "sitemap.csv"
 
     # Generate sitemap
-    generator = SitemapGenerator(website_url)
+    generator = SitemapGenerator(website_url, ignore_woocommerce_urls=ignore_woocommerce)
     generator.crawl_website(max_pages=max_pages)
     
     # Generate appropriate format
