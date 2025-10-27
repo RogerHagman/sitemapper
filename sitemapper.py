@@ -1,5 +1,7 @@
 # sitemapper.py
-# Version 0.3
+"""Version 0.31"""
+
+# Imports
 import requests
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin, urlparse
@@ -10,7 +12,7 @@ import csv
 
 class SitemapGenerator:
     def __init__(self, base_url, delay=1, ignore_woocommerce_urls=False):
-        # Automatically add https:// if no scheme is provided
+        # Automatically add https:// if it was not provided by the user
         if not base_url.startswith(('http://', 'https://')):
             base_url = 'https://' + base_url
         self.base_url = base_url
@@ -31,7 +33,8 @@ class SitemapGenerator:
             
         return (parsed.netloc == self.domain and
                 parsed.scheme in ['http', 'https'] and
-                not url.endswith(('.pdf', '.jpg', '.png', '.zip', 'webp', 'mp4')))
+                # Ignore common non-HTML file types
+                not url.endswith(('.pdf', '.jpg', '.png', '.zip', 'webp', 'mp4', 'mpeg', 'svg')))
 
     def ignore_anchored_links(self, url):
         """Remove anchor fragments from URLs to avoid duplicates"""
