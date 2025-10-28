@@ -1,7 +1,9 @@
 # sitemapper.py
-"""Version 0.32
+"""
+Version 0.36
 
-A web crawler that generates an XML or CSV sitemap of a website, including SEO titles and H1 tags.
+Sitemapcrawler generates a XML or CSV sitemap of a website, 
+including SEO titles and H1 tags.
 
 Features:
 - Crawls a website starting from a base URL
@@ -19,19 +21,30 @@ import xml.etree.ElementTree as ET
 from datetime import datetime
 import time
 import csv
+import os
 
 class SitemapGenerator:
     def __init__(self, base_url, delay=1, ignore_woocommerce_urls=False):
         # Automatically add https:// if it was not provided by the user
         if not base_url.startswith(('http://', 'https://')):
             base_url = 'https://' + base_url
-        self.base_url = base_url
+        self.base_url = self.normalize_url(base_url)  # Normalize base URL
         self.delay = delay
         self.visited_urls = set()
         self.all_links = set()
         self.page_data = {}
         self.domain = urlparse(base_url).netloc
         self.ignore_woocommerce_urls = ignore_woocommerce_urls
+
+    def normalize_url(self, url):
+        """Normalize URL to avoid duplicates with/without trailing slashes"""
+        parsed = urlparse(url)
+        # Remove trailing slash from path and rebuild URL
+        path = parsed.path.rstrip('/')
+        normalized = f"{parsed.scheme}://{parsed.netloc}{path}"
+        if parsed.query:
+            normalized += f"?{parsed.query}"
+        return normalized
 
     def is_valid_url(self, url):
         """Check if URL belongs to the same domain and is valid"""
@@ -96,6 +109,8 @@ class SitemapGenerator:
                 
                 # Remove anchor links before validation
                 full_url = self.ignore_anchored_links(full_url)
+                # Normalize URL to avoid duplicates
+                full_url = self.normalize_url(full_url)
                 
                 if self.is_valid_url(full_url) and full_url not in links:
                     links.append(full_url)
@@ -126,6 +141,8 @@ class SitemapGenerator:
             for link in new_links:
                 # Ensure no anchored links make it to the queue
                 clean_link = self.ignore_anchored_links(link)
+                # Normalize URL to avoid duplicates
+                clean_link = self.normalize_url(clean_link)
                 if clean_link not in self.visited_urls:
                     urls_to_visit.add(clean_link)
                     self.all_links.add(clean_link)
@@ -144,6 +161,7 @@ class SitemapGenerator:
         # Add all discovered URLs (ensuring no anchored links)
         for url in self.all_links:
             clean_url = self.ignore_anchored_links(url)
+            clean_url = self.normalize_url(clean_url)  # Normalize again for safety
             self.add_url_to_sitemap(urlset, clean_url)
 
         # Create XML tree and write to file
@@ -179,7 +197,15 @@ class SitemapGenerator:
         """Generate CSV sitemap with SEO title and H1"""
         # Combine all URLs (base URL + discovered links)
         all_urls = [self.base_url] + list(self.all_links)
-        all_urls.sort()
+        
+        # Use a set to remove duplicates after normalization
+        unique_urls = set()
+        for url in all_urls:
+            normalized_url = self.normalize_url(url)
+            unique_urls.add(normalized_url)
+        
+        # Convert back to sorted list
+        unique_urls = sorted(unique_urls)
         
         with open(output_file, 'w', newline='', encoding='utf-8') as csvfile:
             writer = csv.writer(csvfile)
@@ -188,7 +214,7 @@ class SitemapGenerator:
             writer.writerow(['SEO Title', 'H1', 'Permalinks', 'Date Crawled'])
 
             # Data rows to include both SEO Title and H1
-            for url in all_urls:
+            for url in unique_urls:
                 clean_url = self.ignore_anchored_links(url)
                 seo_title = self.page_data.get(url, {}).get('seo_title', 'Not crawled')
                 h1_content = self.page_data.get(url, {}).get('h1_content', 'Not crawled')
@@ -202,7 +228,7 @@ class SitemapGenerator:
                 ])
         
         print(f"CSV sitemap generated: {output_file}")
-        print(f"Total URLs found: {len(all_urls)}")
+        print(f"Total URLs found: {len(unique_urls)}")
 
     def woocommerce_ignore_cart_urls(self, url):
         """Ignore WooCommerce cart, wishlist and checkout in URLs"""
@@ -225,6 +251,13 @@ class SitemapGenerator:
         
         return False
 
+def add_file_extension(filename, default_extension):
+    """Add file extension if not present"""
+    name, ext = os.path.splitext(filename)
+    if not ext:
+        return f"{filename}.{default_extension}"
+    return filename
+
 def main():
     # Configuration
     website_url = input("Enter website URL (e.g., https://example.com): ").strip()
@@ -234,28 +267,34 @@ def main():
         website_url = 'https://' + website_url
         print(f"Added https:// -> {website_url}")
     
-    max_pages = int(input("Enter maximum pages to crawl (default 50): ") or "50")
+    max_pages = \
+      int(input("Enter maximum pages to crawl (default 1000): ") or "1000")
     
     # WooCommerce URL filtering choice
     print("\nWooCommerce URL Filtering:")
     print("Ignore WooCommerce URLs like cart, checkout, wishlist, etc.?")
-    ignore_woocommerce = input("Ignore WooCommerce URLs? (y/N): ").strip().lower() == 'y'
+    ignore_woocommerce = \
+      input("Ignore WooCommerce URLs? (y/N): ").strip().lower() == 'y'
     
     if ignore_woocommerce:
         print("✓ Will ignore WooCommerce URLs (cart, checkout, wishlist, etc.)")
     else:
         print("✓ Will include all URLs including WooCommerce pages")
     
-    # Output format selection
+    # Output format selection (CSV is now first choice)
     print("\nSelect output format:")
-    print("1. XML (Standard sitemap)")
-    print("2. CSV (Spreadsheet format)")
+    print("1. CSV (Spreadsheet format) - RECOMMENDED")
+    print("2. XML (Standard sitemap)")
     format_choice = input("Enter choice (1 or 2, default 1): ").strip() or "1"
     
     if format_choice == "1":
-        output_file = input("Enter output filename (default sitemap.xml): ") or "sitemap.xml"
+        output_file = \
+          input("Enter output filename (default sitemap.csv): ") or "sitemap.csv"
+        output_file = add_file_extension(output_file, 'csv')
     else:
-        output_file = input("Enter output filename (default sitemap.csv): ") or "sitemap.csv"
+        output_file = \
+          input("Enter output filename (default sitemap.xml): ") or "sitemap.xml"
+        output_file = add_file_extension(output_file, 'xml')
 
     # Generate sitemap
     generator = SitemapGenerator(website_url, ignore_woocommerce_urls=ignore_woocommerce)
@@ -263,9 +302,9 @@ def main():
     
     # Generate appropriate format
     if format_choice == "1":
-        generator.generate_sitemap(output_file)
-    else:
         generator.generate_csv(output_file)
+    else:
+        generator.generate_sitemap(output_file)
 
 if __name__ == "__main__":
     main()
