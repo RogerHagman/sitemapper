@@ -1,8 +1,8 @@
 # sitemapper.py
 """
-Version 0.36
+Version 0.40
 
-Sitemapcrawler generates a XML or CSV sitemap of a website, 
+Sitemapcrawler generates a XML or CSV sitemap of a website,
 including SEO titles and H1 tags.
 
 Features:
@@ -22,42 +22,90 @@ from datetime import datetime
 import time
 import csv
 import os
+import re
 
 class SitemapGenerator:
     def __init__(self, base_url, delay=1, ignore_woocommerce_urls=False):
-        # Automatically add https:// if it was not provided by the user
         if not base_url.startswith(('http://', 'https://')):
             base_url = 'https://' + base_url
-        self.base_url = self.normalize_url(base_url)  # Normalize base URL
+        self.base_url = self.normalize_url(base_url)
         self.delay = delay
         self.visited_urls = set()
         self.all_links = set()
         self.page_data = {}
-        self.domain = urlparse(base_url).netloc
+        parsed_base = urlparse(base_url)
+        self.domain = parsed_base.netloc
+        self.scheme = parsed_base.scheme
         self.ignore_woocommerce_urls = ignore_woocommerce_urls
+        self.session = requests.Session()
+        self.session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+        })
+
+        # Extract base domain without www for comparison
+        self.base_domain = self.get_base_domain(self.domain)
+
+    def get_base_domain(self, domain):
+        """Get the base domain without www prefix"""
+        if domain.startswith('www.'):
+            return domain[4:]
+        return domain
 
     def normalize_url(self, url):
         """Normalize URL to avoid duplicates with/without trailing slashes"""
         parsed = urlparse(url)
-        # Remove trailing slash from path and rebuild URL
         path = parsed.path.rstrip('/')
         normalized = f"{parsed.scheme}://{parsed.netloc}{path}"
         if parsed.query:
             normalized += f"?{parsed.query}"
         return normalized
 
+    def is_same_domain(self, url):
+        """Check if URL belongs to the same base domain (handles www vs non-www)"""
+        parsed = urlparse(url)
+        url_domain = parsed.netloc
+        url_base_domain = self.get_base_domain(url_domain)
+        
+        # Compare base domains (treat www and non-www as same)
+        return url_base_domain == self.base_domain
+
     def is_valid_url(self, url):
         """Check if URL belongs to the same domain and is valid"""
         parsed = urlparse(url)
         
+        # Check if it's the same base domain
+        if not self.is_same_domain(url):
+            return False
+            
         # Check if we should ignore WooCommerce action URLs
         if self.ignore_woocommerce_urls and self.woocommerce_ignore_cart_urls(url):
             return False
             
-        return (parsed.netloc == self.domain and
-                parsed.scheme in ['http', 'https'] and
-                # Ignore common non-HTML file types
-                not url.endswith(('.pdf', '.jpg', '.png', '.zip', 'webp', 'mp4', 'mpeg', 'svg')))
+        # Ignore Cloudflare email protection and related non-content URLs
+        if any(pattern in url.lower() for pattern in [
+            'cdn-cgi/l/email-protection',
+            '/cdn-cgi/',
+            'wp-json/',
+            'xmlrpc.php',
+            'feed/',
+            '.xml',
+            '.rss'
+        ]):
+            return False
+            
+        # File extensions to ignore
+        if any(parsed.path.lower().endswith(ext) for ext in [
+            '.pdf', '.jpg', '.jpeg', '.png', '.gif', '.zip', 
+            '.webp', '.mp4', '.mpeg', '.svg', '.css', '.js',
+            '.ico', '.woff', '.woff2', '.ttf', '.eot'
+        ]):
+            return False
+            
+        # Regex pattern for file extensions anywhere in path
+        if re.search(r'\.(pdf|jpg|jpeg|png|gif|zip|webp|mp4|mpeg|svg|css|js|ico|woff|woff2|ttf|eot)(\?|$|/)', url.lower()):
+            return False
+            
+        return parsed.scheme in ['http', 'https']
 
     def ignore_anchored_links(self, url):
         """Remove anchor links from URLs to avoid duplicates in sitemap"""
@@ -83,10 +131,7 @@ class SitemapGenerator:
     def extract_links_and_titles(self, url):
         """Extract all links, SEO title and H1 from a page"""
         try:
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-            }
-            response = requests.get(url, headers=headers, timeout=10)
+            response = self.session.get(url, timeout=15)
             response.raise_for_status()
 
             soup = BeautifulSoup(response.content, 'html.parser')
@@ -105,25 +150,50 @@ class SitemapGenerator:
             links = []
 
             for link in soup.find_all('a', href=True):
-                full_url = urljoin(url, link['href'])
+                href = link['href'].strip()
+                
+                # Skip empty links, javascript links, and mailto links
+                if not href or href.startswith(('javascript:', 'mailto:', 'tel:', '#')):
+                    continue
+                
+                full_url = urljoin(url, href)
                 
                 # Remove anchor links before validation
                 full_url = self.ignore_anchored_links(full_url)
                 # Normalize URL to avoid duplicates
                 full_url = self.normalize_url(full_url)
                 
-                if self.is_valid_url(full_url) and full_url not in links:
+                # DEBUG: Show what we're checking
+                parsed_full = urlparse(full_url)
+                is_same_domain = self.is_same_domain(full_url)
+                is_valid = self.is_valid_url(full_url)
+                
+                if is_valid and full_url not in links:
                     links.append(full_url)
+                    print(f"    ✓ Found internal link: {full_url}")
+                elif is_same_domain and not is_valid:
+                    print(f"    ✗ Rejected same-domain URL: {full_url} (failed validation)")
+                elif not is_same_domain:
+                    print(f"    ✗ Rejected external URL: {full_url}")
 
             return links
 
+        except requests.RequestException as e:
+            print(f"Network error crawling {url}: {e}")
+            return []
         except Exception as e:
             print(f"Error extracting links from {url}: {e}")
             return []
 
     def crawl_website(self, max_pages=100):
         """Crawl the website starting from base URL"""
+        print("Starting crawl...")
+        print(f"Target base domain: {self.base_domain}")
+        print(f"Will crawl both www and non-www versions")
+        
         urls_to_visit = {self.base_url}
+        self.visited_urls.clear()
+        self.all_links.clear()
 
         while urls_to_visit and len(self.visited_urls) < max_pages:
             current_url = urls_to_visit.pop()
@@ -131,7 +201,7 @@ class SitemapGenerator:
             if current_url in self.visited_urls:
                 continue
 
-            print(f"Crawling: {current_url}")
+            print(f"\nCrawling [{len(self.visited_urls) + 1}/{max_pages}]: {current_url}")
             self.visited_urls.add(current_url)
 
             # Extract links, SEO title and H1 from the current page
@@ -143,12 +213,24 @@ class SitemapGenerator:
                 clean_link = self.ignore_anchored_links(link)
                 # Normalize URL to avoid duplicates
                 clean_link = self.normalize_url(clean_link)
-                if clean_link not in self.visited_urls:
+                
+                # DOUBLE CHECK before adding to queue
+                if (clean_link not in self.visited_urls and 
+                    clean_link not in urls_to_visit and 
+                    self.is_valid_url(clean_link) and
+                    self.is_same_domain(clean_link)):
                     urls_to_visit.add(clean_link)
                     self.all_links.add(clean_link)
+                    print(f"    → Added to queue: {clean_link}")
+                else:
+                    print(f"    → Skipped (already visited/queued/invalid): {clean_link}")
+
+            print(f"  Found {len(new_links)} links on this page")
+            print(f"  Queue size: {len(urls_to_visit)}, Total discovered: {len(self.all_links) + 1}")
 
             # Graceful delay between requests
-            time.sleep(self.delay)
+            if self.delay > 0:
+                time.sleep(self.delay)
 
     def generate_sitemap(self, output_file='sitemap.xml'):
         """Generate XML sitemap with titles"""
@@ -167,7 +249,7 @@ class SitemapGenerator:
         # Create XML tree and write to file
         tree = ET.ElementTree(urlset)
         tree.write(output_file, encoding='utf-8', xml_declaration=True)
-        print(f"Sitemap generated: {output_file}")
+        print(f"\nSitemap generated: {output_file}")
         print(f"Total URLs found: {len(self.all_links) + 1}")
 
     def add_url_to_sitemap(self, urlset, url):
@@ -227,7 +309,7 @@ class SitemapGenerator:
                     lastcrawled
                 ])
         
-        print(f"CSV sitemap generated: {output_file}")
+        print(f"\nCSV sitemap generated: {output_file}")
         print(f"Total URLs found: {len(unique_urls)}")
 
     def woocommerce_ignore_cart_urls(self, url):
@@ -262,38 +344,33 @@ def main():
     # Configuration
     website_url = input("Enter website URL (e.g., https://example.com): ").strip()
     
-    # Automatically add https:// if full url was not provided
     if not website_url.startswith(('http://', 'https://')):
         website_url = 'https://' + website_url
         print(f"Added https:// -> {website_url}")
     
-    max_pages = \
-      int(input("Enter maximum pages to crawl (default 1000): ") or "1000")
+    max_pages = int(input("Enter maximum pages to crawl (default 1000): ") or "1000")
     
     # WooCommerce URL filtering choice
     print("\nWooCommerce URL Filtering:")
     print("Ignore WooCommerce URLs like cart, checkout, wishlist, etc.?")
-    ignore_woocommerce = \
-      input("Ignore WooCommerce URLs? (y/N): ").strip().lower() == 'y'
+    ignore_woocommerce = input("Ignore WooCommerce URLs? (y/N): ").strip().lower() == 'y'
     
     if ignore_woocommerce:
         print("✓ Will ignore WooCommerce URLs (cart, checkout, wishlist, etc.)")
     else:
         print("✓ Will include all URLs including WooCommerce pages")
     
-    # Output format selection (CSV is now first choice)
+    # Output format selection
     print("\nSelect output format:")
     print("1. CSV (Spreadsheet format) - RECOMMENDED")
     print("2. XML (Standard sitemap)")
     format_choice = input("Enter choice (1 or 2, default 1): ").strip() or "1"
     
     if format_choice == "1":
-        output_file = \
-          input("Enter output filename (default sitemap.csv): ") or "sitemap.csv"
+        output_file = input("Enter output filename (default sitemap.csv): ") or "sitemap.csv"
         output_file = add_file_extension(output_file, 'csv')
     else:
-        output_file = \
-          input("Enter output filename (default sitemap.xml): ") or "sitemap.xml"
+        output_file = input("Enter output filename (default sitemap.xml): ") or "sitemap.xml"
         output_file = add_file_extension(output_file, 'xml')
 
     # Generate sitemap
