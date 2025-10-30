@@ -1,6 +1,6 @@
 # sitemapper.py
 """
-Version 0.40
+Version 0.41
 
 Sitemapcrawler generates a XML or CSV sitemap of a website,
 including SEO titles and H1 tags.
@@ -25,7 +25,7 @@ import os
 import re
 
 class SitemapGenerator:
-    def __init__(self, base_url, delay=1, ignore_woocommerce_urls=False):
+    def __init__(self, base_url, delay=1, ignore_woocommerce_urls=False, verbose=False):
         if not base_url.startswith(('http://', 'https://')):
             base_url = 'https://' + base_url
         self.base_url = self.normalize_url(base_url)
@@ -37,6 +37,7 @@ class SitemapGenerator:
         self.domain = parsed_base.netloc
         self.scheme = parsed_base.scheme
         self.ignore_woocommerce_urls = ignore_woocommerce_urls
+        self.verbose = verbose
         self.session = requests.Session()
         self.session.headers.update({
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
@@ -128,6 +129,12 @@ class SitemapGenerator:
             print(f"Error extracting titles from {url}: {e}")
             return "Error extracting SEO title", "Error extracting H1"
 
+    def log(self, message, level="info"):
+        """Log messages based on verbosity level"""
+        if level == "debug" and not self.verbose:
+            return
+        print(message)
+
     def extract_links_and_titles(self, url):
         """Extract all links, SEO title and H1 from a page"""
         try:
@@ -144,8 +151,8 @@ class SitemapGenerator:
                 'lastmod': datetime.now().strftime('%Y-%m-%d')
             }
             
-            print(f"  SEO Title: {seo_title}")
-            print(f"  H1: {h1_content}")
+            self.log(f"  SEO Title: {seo_title}")
+            self.log(f"  H1: {h1_content}")
             
             links = []
 
@@ -163,18 +170,13 @@ class SitemapGenerator:
                 # Normalize URL to avoid duplicates
                 full_url = self.normalize_url(full_url)
                 
-                # DEBUG: Show what we're checking
-                parsed_full = urlparse(full_url)
-                is_same_domain = self.is_same_domain(full_url)
-                is_valid = self.is_valid_url(full_url)
-                
-                if is_valid and full_url not in links:
+                if self.is_valid_url(full_url) and full_url not in links:
                     links.append(full_url)
-                    print(f"    ✓ Found internal link: {full_url}")
-                elif is_same_domain and not is_valid:
-                    print(f"    ✗ Rejected same-domain URL: {full_url} (failed validation)")
-                elif not is_same_domain:
-                    print(f"    ✗ Rejected external URL: {full_url}")
+                    self.log(f"    ✓ Found internal link: {full_url}", "debug")
+                elif self.is_same_domain(full_url) and not self.is_valid_url(full_url):
+                    self.log(f"    ✗ Rejected same-domain URL: {full_url} (failed validation)", "debug")
+                elif not self.is_same_domain(full_url):
+                    self.log(f"    ✗ Rejected external URL: {full_url}", "debug")
 
             return links
 
@@ -189,7 +191,8 @@ class SitemapGenerator:
         """Crawl the website starting from base URL"""
         print("Starting crawl...")
         print(f"Target base domain: {self.base_domain}")
-        print(f"Will crawl both www and non-www versions")
+        if self.verbose:
+            print(f"Will crawl both www and non-www versions")
         
         urls_to_visit = {self.base_url}
         self.visited_urls.clear()
@@ -221,12 +224,13 @@ class SitemapGenerator:
                     self.is_same_domain(clean_link)):
                     urls_to_visit.add(clean_link)
                     self.all_links.add(clean_link)
-                    print(f"    → Added to queue: {clean_link}")
+                    self.log(f"    → Added to queue: {clean_link}", "debug")
                 else:
-                    print(f"    → Skipped (already visited/queued/invalid): {clean_link}")
+                    self.log(f"    → Skipped (already visited/queued/invalid): {clean_link}", "debug")
 
             print(f"  Found {len(new_links)} links on this page")
-            print(f"  Queue size: {len(urls_to_visit)}, Total discovered: {len(self.all_links) + 1}")
+            if self.verbose:
+                print(f"  Queue size: {len(urls_to_visit)}, Total discovered: {len(self.all_links) + 1}")
 
             # Graceful delay between requests
             if self.delay > 0:
@@ -350,6 +354,16 @@ def main():
     
     max_pages = int(input("Enter maximum pages to crawl (default 1000): ") or "1000")
     
+    # Verbose mode choice
+    print("\nVerbose Mode:")
+    print("Show detailed debugging output? (Useful for troubleshooting)")
+    verbose_mode = input("Enable verbose mode? (y/N): ").strip().lower() == 'y'
+    
+    if verbose_mode:
+        print("✓ Verbose mode enabled - will show detailed link discovery")
+    else:
+        print("✓ Quiet mode enabled - only essential progress information")
+    
     # WooCommerce URL filtering choice
     print("\nWooCommerce URL Filtering:")
     print("Ignore WooCommerce URLs like cart, checkout, wishlist, etc.?")
@@ -374,7 +388,7 @@ def main():
         output_file = add_file_extension(output_file, 'xml')
 
     # Generate sitemap
-    generator = SitemapGenerator(website_url, ignore_woocommerce_urls=ignore_woocommerce)
+    generator = SitemapGenerator(website_url, ignore_woocommerce_urls=ignore_woocommerce, verbose=verbose_mode)
     generator.crawl_website(max_pages=max_pages)
     
     # Generate appropriate format
